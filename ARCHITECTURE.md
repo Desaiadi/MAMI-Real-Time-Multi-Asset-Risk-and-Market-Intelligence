@@ -1,19 +1,17 @@
 # MAMI — Distributed Architecture
 
-This document describes the **industry-grade, infrastructure-level** deployment
-of MAMI: the single-process demo decomposed into independent microservices
-communicating over a real message bus, with externalized state. This is the
-"span many machines, survive failures, ingest real volume" version.
+This document is the **run guide** for MAMI: independent microservices
+communicating over a real message bus (Kafka) with externalized state (Redis).
+This is the "span many machines, survive failures, ingest real volume"
+architecture, runnable on a laptop via Docker Compose.
 
-There are now **two ways to run MAMI**:
+All services share the same math via the [`mami_core`](mami_core/) library —
+one source of truth for Black-Scholes, VaR, and the ML models.
 
-| Mode | Command | What it is |
-|---|---|---|
-| **Lite** (single process) | `python run.py` | Everything in one process. Fast to start, no Docker. Good for development and the algorithms. See [OVERVIEW.md](OVERVIEW.md). |
-| **Distributed** (this doc) | `docker compose up --build` | Kafka + Redis + 4 microservices in containers. The real architecture. |
-
-Both modes share the exact same math via the `mami_core` library — there is one
-source of truth for Black-Scholes, VaR, and the ML models.
+```bash
+docker compose up --build     # build + start all 7 containers
+# open http://localhost:8000   (dashboard)  ·  /docs (API)
+```
 
 ---
 
@@ -63,9 +61,9 @@ computation.
 
 ---
 
-## 3. What this buys you over the lite version
+## 3. Why this architecture (vs. a naive single-process design)
 
-| Property | Lite (single process) | Distributed (this) |
+| Property | Naive single process | This (distributed) |
 |---|---|---|
 | **Survives a crash** | No — process death loses all state | Yes — state is in Redis; any service restarts (`restart: unless-stopped`) and resumes |
 | **Scales horizontally** | No — one GIL-bound process | Yes — add replicas of risk-engine/ml-service in the same Kafka consumer group; partitions spread across them |

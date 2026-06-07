@@ -1,16 +1,20 @@
 # MAMI — Project Overview
 
-**MAMI** (Real-Time Multi-Asset Risk & Market Intelligence) is a self-contained,
-runs-on-your-laptop demo of an institutional **derivatives risk platform**. It
-simulates a live options-trading desk: a market data feed streams in, and the
-system continuously re-prices an options portfolio, measures how much money it
-could lose, and watches for abnormal market behavior — all in real time, pushed
-to a live browser dashboard.
+**MAMI** (Real-Time Multi-Asset Risk & Market Intelligence) is a real-time
+institutional **derivatives risk platform**. It simulates a live options-trading
+desk: a market data feed streams in, and the system continuously re-prices an
+options portfolio, measures how much money it could lose, and watches for
+abnormal market behavior — all in real time, pushed to a live browser dashboard.
 
-The infrastructure is faked (no cloud, no GPU, no Kafka), but the **quantitative
-finance and machine-learning algorithms are the real, production-grade ones**.
-The point of the project is to demonstrate the *math and the data flow* of a risk
-platform without needing a data center.
+It runs as a **distributed microservice system** — Apache Kafka as the event
+bus, Redis as shared state, and four independent services — orchestrated by
+Docker Compose so the whole thing comes up on a laptop with one command. The
+market feed is simulated, but the **quantitative finance and machine-learning
+algorithms are the real, production-grade ones**.
+
+> This is the narrative "what it does" doc. For the run guide see
+> [ARCHITECTURE.md](ARCHITECTURE.md); for the full engineering spec (HLD/LLD,
+> data models, sequence diagrams) see [DESIGN.md](DESIGN.md).
 
 ---
 
@@ -38,71 +42,66 @@ MAMI answers all three on every tick and streams the results to a dashboard.
 
 ## 2. Architecture at a glance
 
+The work is split across four independent services that communicate only through
+a **Kafka** event bus and a shared **Redis** state store — no service calls
+another directly.
+
 ```
-                          ┌─────────────────────────────────────────────┐
-                          │              SimulationEngine               │
-                          │            (src/engine.py)                  │
-                          │                                             │
-   GBM price simulator ──▶│  prices ─┬─▶ Black-Scholes ─▶ Greeks        │
-   (every 0.5s tick)      │          │   (black_scholes.py)             │
-                          │          ├─▶ Monte Carlo VaR ─▶ VaR/CVaR    │
-                          │          │   (var_engine.py)                │
-                          │          └─▶ Isolation Forest + EWMA ─▶     │
-                          │              (anomaly.py)        alerts      │
-                          └───────────────────┬─────────────────────────┘
-                                              │ snapshot() dict (JSON)
-                                              ▼
-                          ┌─────────────────────────────────────────────┐
-                          │            FastAPI app (src/api.py)         │
-                          │  • broadcast loop pushes state every 0.5s   │
-                          │  • WebSocket  /ws/live                       │
-                          │  • REST       /api/v1/*                      │
-                          └───────────────────┬─────────────────────────┘
-                                              │
-                                              ▼
-                          ┌─────────────────────────────────────────────┐
-                          │     dashboard/index.html (single file)      │
-                          │  live prices • Greeks • VaR • alerts panel  │
-                          └─────────────────────────────────────────────┘
+   ┌───────────┐   market.ticks   ┌────────────┐
+   │ ingestion │─────────┬───────▶│ risk-engine│  Greeks + Monte Carlo VaR
+   │  GBM feed │         │        └─────┬──────┘
+   └─────▲─────┘         │              │ writes
+         │               │        ┌─────▼──────┐
+         │               └───────▶│ ml-service │  Isolation Forest + EWMA
+         │ market.commands        └─────┬──────┘
+         │                              │ writes
+   ┌─────┴────────┐   reads/writes  ┌───▼──────────────────────────┐
+   │ api-gateway  │◀───────────────▶│            REDIS             │
+   │ FastAPI/WS   │                 │  prices, greeks, var,        │
+   └─────┬────────┘                 │  scores, forecasts, alerts   │
+         │ WebSocket + REST         └──────────────────────────────┘
+         ▼
+   dashboard/index.html  ·  live prices • Greeks • VaR • alerts
 ```
 
-Everything runs **in one Python process**. State lives in memory (Python
-`deque`s). There is no database, no message queue, and no network feed.
+**7 containers:** Zookeeper + Kafka (bus), Redis (state), and the four services.
+Each runs as its own process, restarts independently, and can be scaled by adding
+replicas. State lives in Redis, so no single process holds anything unrecoverable.
 
 ---
 
 ## 3. The data flow, tick by tick
 
-Each "tick" is 0.5 seconds (2 ticks/second). On every tick the engine's
-`step()` method (`src/engine.py:72`) does the following:
+Each "tick" is 0.5 seconds (2 ticks/second). A tick flows through the system
+like this:
 
-1. **`_advance_prices()`** — moves every symbol's price one step using
-   **Geometric Brownian Motion** (the standard model for stock prices), with an
-   occasional injected **flash crash** (a sudden large negative jump that decays
-   over several ticks).
-2. **`_run_ml()`** — feeds the latest price move into the per-symbol
-   **Isolation Forest** anomaly detector and the **EWMA volatility forecaster**,
-   and raises an **alert** if the anomaly score crosses a threshold.
-3. **`_compute_greeks()`** — re-prices all four option positions with
-   **Black-Scholes** and aggregates portfolio-level Delta/Theta/Vega.
-4. **`_compute_var()`** — every 10th tick, runs a **5,000-path Monte Carlo**
-   simulation to estimate portfolio VaR/CVaR (it's the expensive step, so it
-   runs less often).
-5. **`snapshot()`** — packages all of the above into one JSON-serializable dict.
+1. **ingestion** advances every symbol's price one step using **Geometric
+   Brownian Motion** (the standard model for stock prices), occasionally
+   injecting a **flash crash**, and publishes a *TickFrame* to `market.ticks`.
+2. **risk-engine** consumes the frame, re-prices all four positions with
+   **Black-Scholes**, aggregates portfolio Delta/Theta/Vega, and — every 10th
+   tick — runs a **5,000-path Monte Carlo** VaR/CVaR (the expensive step, so it
+   runs less often). Results go to Redis.
+3. **ml-service** consumes the same frame, feeds the price move into the
+   per-symbol **Isolation Forest** detector and the **EWMA forecaster**, and
+   raises an **alert** if the anomaly score crosses a threshold. Results go to
+   Redis.
+4. **api-gateway** consumes the frame too, writes the latest prices + history to
+   Redis, then **reassembles the full state snapshot** from Redis and pushes it
+   to every connected WebSocket client. The dashboard redraws.
 
-The FastAPI broadcast loop (`src/api.py:51`) calls `step()` on a timer and pushes
-the snapshot to every connected WebSocket client. The dashboard receives it and
-redraws.
-
-**Warm-up:** before serving any data, the engine runs 200 silent ticks
-(`WARMUP_TICKS`) so price history and the ML models have enough data to be
-meaningful from the first frame.
+Because the three consumers read the same topic independently, they all see every
+tick — and any of them can fall behind or restart without blocking the others
+(Kafka buffers).
 
 ---
 
 ## 4. The algorithms (the real part)
 
-### Black-Scholes Greeks — `src/black_scholes.py`
+All algorithms live in the shared [`mami_core`](mami_core/) library — one source
+of truth used by every service.
+
+### Black-Scholes Greeks — `mami_core/black_scholes.py`
 The 1973 Nobel-winning option-pricing formula, implemented exactly with
 NumPy + SciPy. From five inputs (spot price `S`, strike `K`, time-to-expiry `T`,
 implied volatility `σ`, risk-free rate `r`) it computes:
@@ -116,19 +115,20 @@ implied volatility `σ`, risk-free rate `r`) it computes:
 (contracts × 100 shares). Edge cases (expiry, deep in/out-of-the-money) are
 handled explicitly.
 
-### Monte Carlo VaR / CVaR — `src/var_engine.py`
+### Monte Carlo VaR / CVaR — `mami_core/var_engine.py`
 - **`historical_var()`** — replays actual past returns to find the loss
   threshold at a confidence level (e.g. the 5th-percentile loss for 95% VaR).
 - **`monte_carlo_var()`** — simulates thousands of possible end-of-day prices
   with GBM and measures the loss distribution. **VaR** is the threshold loss at
   the confidence level; **CVaR** (a.k.a. Expected Shortfall, required under Basel
   IV) is the *average* loss in the tail *beyond* that threshold — i.e. "how bad
-  do the bad days get."
+  do the bad days get." This is the heavy kernel and runs on a **GPU** (CuPy)
+  when one is available, or NumPy otherwise (see §7).
 - **`portfolio_var()`** — aggregates simulated P&L across all positions to get a
   single portfolio-level VaR/CVaR (simplified to assume independence between
   assets).
 
-### Anomaly detection & volatility forecasting — `src/anomaly.py`
+### Anomaly detection & volatility forecasting — `mami_core/anomaly.py`
 - **`AnomalyDetector`** — a scikit-learn **Isolation Forest** per symbol. It's
   *unsupervised*: it learns what "normal" market microstructure looks like
   (price velocity, volume z-score, bid-ask spread ratio) and scores how much an
@@ -139,31 +139,35 @@ handled explicitly.
   current volatility to a rolling baseline and outputs a **spike probability**
   and a status (`NORMAL` / `ELEVATED` / `SPIKE`).
 
-When an alert fires, the engine classifies it as `FLASH_CRASH`, `VOL_SPIKE`, or
-generic `ANOMALY`, assigns a severity, and adds it to a rolling alert feed
+When an alert fires, the ml-service classifies it as `FLASH_CRASH`, `VOL_SPIKE`,
+or generic `ANOMALY`, assigns a severity, and adds it to a rolling alert feed
 (de-duplicated so one event doesn't spam the panel).
 
 ---
 
-## 5. The web layer — `src/api.py`
+## 5. The edge layer — api-gateway
 
-A single **FastAPI** app exposes:
+The **api-gateway** is a **FastAPI** service that owns no risk math. It tails the
+bus, reads shared state from Redis, and serves clients:
 
 | Method | Endpoint | What it returns |
 |---|---|---|
 | GET | `/` | The dashboard HTML |
 | GET | `/docs` | Auto-generated interactive API docs (Swagger) |
-| WS  | `/ws/live` | Real-time JSON state stream, pushed every 0.5s |
+| WS  | `/ws/live` | Real-time JSON state stream, pushed every tick |
 | GET | `/api/v1/snapshot` | The full current state in one call |
 | GET | `/api/v1/greeks/{symbol}` | Greeks for one position |
 | GET | `/api/v1/var` | Portfolio VaR / CVaR + aggregate Greeks |
 | GET | `/api/v1/alerts` | Recent anomaly alerts |
-| GET | `/api/v1/history/{symbol}` | Price + return history for a symbol |
+| GET | `/api/v1/history/{symbol}` | Price history for a symbol |
 | POST | `/api/v1/trigger-crash` | **Demo button:** inject a flash crash |
 
-The `trigger-crash` endpoint is the showpiece: hitting it (or the ⚡ button on
-the dashboard) forces a flash crash on a symbol, and you can watch the Isolation
-Forest score spike and an alert appear within a second or two.
+The `trigger-crash` endpoint is the showpiece — and a nice demonstration of the
+architecture. Hitting it (or the ⚡ button on the dashboard) publishes a command
+to `market.commands`; the **ingestion** service consumes it and applies the
+crash; the price drops; **ml-service** detects it and raises a `FLASH_CRASH`
+alert — a full round-trip across the bus, visible on the dashboard within a
+second or two.
 
 ---
 
@@ -176,20 +180,25 @@ anomaly-alerts panel — plus the ⚡ flash-crash trigger.
 
 ---
 
-## 7. Local demo vs. production
+## 7. What maps to what (vs. a production platform)
 
-The README frames MAMI as a local stand-in for a much larger production system.
-The **algorithms are identical**; only the **infrastructure** is swapped out:
+The **algorithms are identical** to a production desk; the infrastructure here is
+real but laptop-scale, and the market feed is simulated:
 
-| Production component | Local equivalent in this repo |
+| Production component | In this project |
 |---|---|
-| FIX / WebSocket market-data feed | Geometric Brownian Motion price simulator |
-| Apache Kafka | In-process asyncio event loop |
-| Spark Structured Streaming | In-process tick aggregation |
-| Delta Lake / Databricks | In-memory `deque` per symbol |
-| RAPIDS / cuDF (GPU compute) | NumPy (CPU) |
-| Kubernetes microservices | A single FastAPI process |
+| FIX / WebSocket market-data feed | Geometric Brownian Motion price simulator (ingestion) |
+| Apache Kafka | **Apache Kafka** (real) |
+| Spark Structured Streaming | Stateful stream consumers (ml-service) |
+| Delta Lake / Databricks | Redis shared state |
+| RAPIDS / cuDF (GPU compute) | **CuPy on GPU when available, else NumPy** |
+| Kubernetes | Docker Compose (K8s is the documented next step) |
 | LSTM volatility model | EWMA volatility forecaster |
+
+The Monte Carlo VaR kernel is written against a backend abstraction
+([`mami_core/compute.py`](mami_core/compute.py)): it runs on a GPU via CuPy if
+one is present and **transparently falls back to NumPy** otherwise — GPU is
+opt-in, never required.
 
 ---
 
@@ -197,69 +206,52 @@ The **algorithms are identical**; only the **infrastructure** is swapped out:
 
 ```
 mami/
-├── run.py                 ← Entry point: starts the uvicorn server on :8000
-├── run.sh                 ← Convenience launcher (creates venv, installs, runs)
-├── requirements.txt       ← Runtime dependencies
-├── Makefile               ← `make install` / `make run` / `make clean`
-├── docker-compose.yml     ← OPTIONAL real Kafka+Redis (not needed for the demo)
-├── setup.cfg              ← pytest config
-├── src/
-│   ├── config.py          ← Portfolio, prices, vols, and simulation settings
-│   ├── black_scholes.py   ← Delta / Gamma / Vega / Theta
-│   ├── var_engine.py      ← Historical + Monte Carlo VaR / CVaR
-│   ├── anomaly.py         ← Isolation Forest + EWMA forecaster
-│   ├── engine.py          ← Simulation orchestrator (the heart of MAMI)
-│   └── api.py             ← FastAPI app + WebSocket broadcast loop
-├── dashboard/
-│   └── index.html         ← Live risk dashboard (single file)
-└── tests/
-    ├── test_greeks.py     ← Black-Scholes Greeks tests
-    └── test_var.py        ← VaR / CVaR tests
+├── docker-compose.yml      ← 7-container topology
+├── mami_core/              ← shared library (single source of truth)
+│   ├── config.py           ← portfolio, prices, vols, infra settings
+│   ├── compute.py          ← GPU/CPU array backend (CuPy → NumPy)
+│   ├── black_scholes.py    ← Delta / Gamma / Vega / Theta
+│   ├── var_engine.py       ← Historical + Monte Carlo VaR / CVaR
+│   ├── anomaly.py          ← Isolation Forest + EWMA forecaster
+│   └── schemas.py          ← Kafka message contracts
+├── services/
+│   ├── ingestion/          ← GBM market-data producer + command consumer
+│   ├── risk_engine/        ← Greeks + Monte Carlo VaR
+│   ├── ml_service/         ← anomaly detection + forecasting
+│   └── api_gateway/        ← FastAPI: REST + WebSocket + dashboard
+├── dashboard/index.html    ← live risk dashboard (single file)
+└── tests/                  ← Greeks + VaR/CVaR unit tests
 ```
 
-**Tuning knobs** all live in `src/config.py`: the portfolio positions, initial
-prices, volatilities, risk-free rate, VaR confidence level, Monte Carlo path
-count, tick interval, and the anomaly/flash-crash thresholds.
+**Tuning knobs** all live in [`mami_core/config.py`](mami_core/config.py): the
+portfolio positions, initial prices, volatilities, risk-free rate, VaR confidence
+level, Monte Carlo path count, tick interval, and anomaly/flash-crash thresholds.
+Infrastructure settings (Kafka/Redis addresses, topic names) are environment
+variables wired in `docker-compose.yml`.
 
 ---
 
 ## 9. How to run it
 
-Requires **Python 3.10+**.
-
 ```bash
-# from the mami/ directory
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python run.py
+docker compose up --build
 ```
 
 Then open **http://localhost:8000** for the dashboard, or
-**http://localhost:8000/docs** for the API explorer. (`./run.sh` does all of the
-above in one command.)
+**http://localhost:8000/docs** for the API explorer.
 
 Trigger the demo flash crash from the terminal:
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/trigger-crash"           # random symbol
+curl -X POST "http://localhost:8000/api/v1/trigger-crash"            # random symbol
 curl -X POST "http://localhost:8000/api/v1/trigger-crash?symbol=NVDA" # specific one
 ```
 
-Run the test suite:
+Run the unit tests (no Docker — they exercise the shared `mami_core` algorithms):
 
 ```bash
-pip install pytest
+pip install -r requirements.txt
 pytest        # 32 tests covering the Greeks and VaR/CVaR math
 ```
 
----
-
-## 10. A note on the codebase history
-
-This repo originally shipped **two overlapping implementations** of MAMI (a flat
-`src/*.py` layout and a nested `src/api/`, `src/risk/`, `src/ml/` package
-layout) that had drifted apart and conflicted — `python run.py` loaded an empty
-package and crashed. It has since been consolidated down to the **single flat
-implementation** documented here, which the dashboard, README, and `run.py` all
-target. The test suite was repointed to match, and the server, WebSocket stream,
-flash-crash demo, and all 32 tests are verified working.
+Stop the stack with `docker compose down` (add `-v` to wipe Kafka/Redis volumes).

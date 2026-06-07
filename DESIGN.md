@@ -106,23 +106,23 @@ exercises the "tracked but unhedged" path).
 Single human actor (the analyst) and one simulated external system (the market
 feed). No external dependencies beyond the bundled infrastructure.
 
-### 3.2 Two deployment modes
+### 3.2 Deployment model
 
-MAMI ships in two topologies sharing one algorithm library (`mami_core`):
+MAMI runs as a **distributed microservice system** — 7 containers orchestrated
+by Docker Compose, with Apache Kafka as the event bus and Redis as the shared
+state store. The four application services share one algorithm library,
+[`mami_core`](mami_core/), so there is a single source of truth for the math.
 
-| | **Lite** | **Distributed** |
-|---|---|---|
-| Process model | 1 process | 7 containers |
-| Bus | in-process asyncio | Apache Kafka |
-| State | in-memory deques | Redis |
-| Entry | `python run.py` | `docker compose up --build` |
-| Use | dev, algorithm work | the real architecture |
-| Code | [`src/`](src/) | [`services/`](services/) |
+| Property | Value |
+|---|---|
+| Process model | 7 containers (3 infra + 4 services) |
+| Bus | Apache Kafka |
+| State | Redis |
+| Entry | `docker compose up --build` |
+| Service code | [`services/`](services/) |
+| Shared algorithms | [`mami_core/`](mami_core/) |
 
-This document focuses on the **distributed** mode; the lite mode's
-`SimulationEngine` is covered in [§5.3](#53-lite-mode-simulationengine).
-
-### 3.3 Component inventory (distributed)
+### 3.3 Component inventory
 
 | Component | Type | Responsibility |
 |---|---|---|
@@ -402,15 +402,6 @@ Redis + produce downstream**. Every service logs to stdout (`flush=True`).
 | Commands | `POST /trigger-crash` → `send_and_wait(market.commands, …)` (round-trips to ingestion) |
 | Clients | In-memory `set[WebSocket]`; snapshot sent on connect, then every tick |
 
-### 5.3 Lite mode: `SimulationEngine`
-
-[`src/engine.py`](src/engine.py) collapses all four services into one class for
-no-Docker development. `step()` performs, in-process and in order:
-`_advance_prices()` → `_run_ml()` → `_compute_greeks()` → `_compute_var()`
-(every 10th tick) → `snapshot()`. [`src/api.py`](src/api.py) wraps it in FastAPI
-with a 0.5s broadcast loop. It imports the **same** `mami_core` algorithms, so
-behavior matches the distributed services.
-
 ---
 
 ## 6. Data models & contracts
@@ -451,7 +442,7 @@ See [§4.3](#43-state-store-design-redis).
 ### 6.3 Snapshot schema (canonical dashboard contract)
 
 The single most important contract: the dashboard and all `/api/v1` readers
-depend on this exact shape. Identical in lite and distributed modes.
+depend on this exact shape.
 
 ```json
 {
@@ -479,8 +470,7 @@ depend on this exact shape. Identical in lite and distributed modes.
 
 ## 7. API reference
 
-Served by the api-gateway (distributed) or `src/api.py` (lite). Base path
-`/api/v1`.
+Served by the api-gateway. Base path `/api/v1`.
 
 | Method | Endpoint | Description | Returns |
 |---|---|---|---|
@@ -620,7 +610,7 @@ fan-out → pub/sub layer for many consumers.
 | Slow/dead WebSocket client | Detected on send failure | Socket dropped from the client set |
 
 State is **externalized and overwritten every tick**, so no single process holds
-unrecoverable state — the core property the lite mode lacks.
+unrecoverable state — the core property a single-process design lacks.
 
 ---
 
@@ -641,7 +631,7 @@ Run units: `pip install pytest && pytest` (32 tests). They import the shared
 ## 13. Build & deployment
 
 ```bash
-# Distributed
+# Run the stack
 docker compose up --build           # build images, start 7 containers
 docker compose ps                   # health/status
 docker compose logs -f risk-engine  # follow one service
@@ -649,10 +639,8 @@ docker compose up -d --scale risk-engine=3   # scale a compute service
 docker compose down                 # stop
 docker compose down -v              # stop + wipe Kafka/Redis volumes
 
-# Lite
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python run.py                       # http://localhost:8000
+# Run the unit tests (no Docker; exercises mami_core)
+pip install -r requirements.txt && pytest
 ```
 
 **Image design:** each service has its own Dockerfile (build context = repo
@@ -743,4 +731,3 @@ to close each gap (priority order):
 | **Snapshot** | The canonical full-state dict served to the dashboard |
 | **Consumer group** | Kafka clients sharing partitions of a topic (scaling unit) |
 | **xp** | The active array backend (CuPy on GPU, NumPy on CPU) |
-| **Lite / Distributed** | Single-process vs. microservice deployment modes |
