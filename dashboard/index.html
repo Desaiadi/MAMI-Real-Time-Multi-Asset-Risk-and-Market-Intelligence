@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MAMI · Risk Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #080b10;
+  --panel:   #0d1018;
+  --panel2:  #111420;
+  --border:  #1a1f2e;
+  --border2: #242938;
+  --text:    #d8dce8;
+  --muted:   #5a6178;
+  --green:   #10b981;
+  --red:     #f43f5e;
+  --blue:    #38bdf8;
+  --yellow:  #fbbf24;
+  --purple:  #a78bfa;
+  --teal:    #2dd4bf;
+  --mono:    'JetBrains Mono', monospace;
+  --sans:    'DM Sans', sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ───────────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.logo {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: var(--text);
+}
+.logo span { color: var(--teal); }
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,100% { opacity:1; } 50% { opacity:.4; }
+}
+.status-text { font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+.header-time  { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: auto; }
+.conn-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 3px; font-weight: 500;
+  background: #0f2d1c; color: var(--green); border: 1px solid #1a4d2e;
+  font-family: var(--mono);
+}
+.conn-badge.offline { background: #2d1018; color: var(--red); border-color: #4d1a24; }
+
+/* ── Main Layout ──────────────────────────────────────────────── */
+.main {
+  display: grid;
+  grid-template-columns: 195px 1fr 220px;
+  grid-template-rows: 1fr auto;
+  flex: 1;
+  overflow: hidden;
+  gap: 0;
+}
+
+/* ── Left: Positions ─────────────────────────────────────────── */
+.positions-panel {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.panel-head {
+  padding: 10px 14px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.position-card {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background .12s;
+}
+.position-card:hover, .position-card.active {
+  background: var(--panel2);
+}
+.pos-row1 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+.pos-ticker {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pos-price {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+.pos-row2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.pos-type {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.pos-type.call { background: #0a2a1a; color: var(--green); }
+.pos-type.put  { background: #2a0a12; color: var(--red);   }
+.pos-type.watch{ background: #0d1a2a; color: var(--blue);  }
+.pos-chg {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.pos-score {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.score-bar {
+  flex: 1;
+  height: 2px;
+  background: var(--border2);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.score-fill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width .4s ease;
+}
+.score-val {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+  min-width: 26px;
+  text-align: right;
+}
+
+/* ── Center: Chart + Alerts ──────────────────────────────────── */
+.center-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+.chart-area {
+  flex: 1;
+  padding: 12px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chart-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.chart-sym {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+.chart-price {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+}
+.chart-chg {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.chart-wrap {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+.alerts-area {
+  border-top: 1px solid var(--border);
+  padding: 8px 0 0;
+  max-height: 170px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.alerts-head {
+  padding: 0 16px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.alert-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 16px;
+  border-bottom: 1px solid var(--border);
+  animation: slideIn .3s ease;
+}
+@keyframes slideIn { from { opacity:0; transform:translateX(-8px); } to { opacity:1; } }
+.alert-sev {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  padding: 1px 5px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.alert-sev.HIGH   { background: #2d0a10; color: #fb7185; border: 1px solid #4d1a24; }
+.alert-sev.MEDIUM { background: #2a1f00; color: var(--yellow); border: 1px solid #4d3800; }
+.alert-ticker { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text); }
+.alert-type   { font-size: 10px; color: var(--muted); flex: 1; }
+.alert-score  { font-family: var(--mono); font-size: 11px; }
+.alert-time   { font-family: var(--mono); font-size: 10px; color: var(--muted); flex-shrink: 0; }
+.no-alerts    { padding: 10px 16px; font-size: 12px; color: var(--muted); }
+
+/* ── Right: Risk Metrics ──────────────────────────────────────── */
+.risk-panel {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.risk-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.risk-section:last-child { border-bottom: none; }
+.risk-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.metric-name {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.metric-sym { font-size: 13px; }
+.metric-val {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+.var-big {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.var-sub { font-size: 10px; color: var(--muted); margin-bottom: 10px; }
+.crash-btn {
+  width: 100%;
+  padding: 8px;
+  background: transparent;
+  border: 1px solid #4d1a24;
+  border-radius: 4px;
+  color: #fb7185;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  letter-spacing: .04em;
+  transition: all .15s;
+  margin-top: 4px;
+}
+.crash-btn:hover {
+  background: #2d0a10;
+  box-shadow: 0 0 10px rgba(244,63,94,.15);
+}
+.crash-btn:active { transform: scale(.98); }
+
+/* ── Bottom: Greeks Bar ───────────────────────────────────────── */
+.greeks-bar {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  height: 44px;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.greeks-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.greek-item {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.greek-sym {
+  font-size: 14px;
+  font-weight: 600;
+}
+.greek-name { font-size: 10px; color: var(--muted); }
+.greek-val  { font-family: var(--mono); font-size: 13px; font-weight: 500; }
+.divider { width: 1px; height: 20px; background: var(--border2); flex-shrink: 0; }
+
+/* ── Helpers ─────────────────────────────────────────────────── */
+.up   { color: var(--green); }
+.down { color: var(--red);   }
+.neu  { color: var(--muted); }
+.blue { color: var(--blue);  }
+.yellow{ color: var(--yellow);}
+.purple{ color: var(--purple);}
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="logo">M<span>A</span>MI</div>
+  <div class="status-dot" id="dot"></div>
+  <div class="status-text">LIVE · Real-Time Risk Platform</div>
+  <div class="conn-badge offline" id="connBadge">CONNECTING</div>
+  <div class="header-time" id="headerTime">--:--:--</div>
+</header>
+
+<!-- ── Main grid ── -->
+<div class="main">
+
+  <!-- Left: Positions -->
+  <div class="positions-panel">
+    <div class="panel-head">Positions</div>
+    <div id="positionList"></div>
+  </div>
+
+  <!-- Center: Chart + Alerts -->
+  <div class="center-panel">
+    <div class="chart-area">
+      <div class="chart-title">
+        <span class="chart-sym" id="chartSym">AAPL</span>
+        <span class="chart-price" id="chartPrice">—</span>
+        <span class="chart-chg" id="chartChg"></span>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="priceChart"></canvas>
+      </div>
+    </div>
+    <div class="alerts-area">
+      <div class="alerts-head">Anomaly Alerts</div>
+      <div id="alertsList"><div class="no-alerts">Watching for anomalies…</div></div>
+    </div>
+  </div>
+
+  <!-- Right: Risk Metrics -->
+  <div class="risk-panel">
+    <div class="panel-head">Portfolio Risk</div>
+
+    <div class="risk-section">
+      <div class="risk-label">Net Exposure</div>
+      <div class="metric-row">
+        <div class="metric-name"><span class="metric-sym green">Δ</span> Net Delta</div>
+        <div class="metric-val" id="netDelta">—</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-name"><span class="metric-sym red">Θ</span> Daily Theta</div>
+        <div class="metric-val down" id="totalTheta">—</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-name"><span class="metric-sym yellow">ν</span> Vega / 1%</div>
+        <div class="metric-val up" id="totalVega">—</div>
+      </div>
+    </div>
+
+    <div class="risk-section">
+      <div class="risk-label">Value at Risk · 95%</div>
+      <div class="var-big down" id="varVal">—</div>
+      <div class="var-sub">Monte Carlo · 5,000 paths</div>
+      <div class="risk-label" style="margin-top:8px">CVaR (Exp. Shortfall)</div>
+      <div class="var-big down" id="cvarVal">—</div>
+      <div class="var-sub">Avg loss in worst 5% of days</div>
+    </div>
+
+    <div class="risk-section">
+      <div class="risk-label">Anomaly Monitor</div>
+      <div id="scoreList"></div>
+    </div>
+
+    <div class="risk-section">
+      <div class="risk-label">Controls</div>
+      <button class="crash-btn" onclick="triggerCrash()">⚡ Trigger Flash Crash</button>
+    </div>
+  </div>
+
+  <!-- Bottom: Greeks bar -->
+  <div class="greeks-bar">
+    <div class="greeks-label" id="greeksTitle">AAPL Greeks</div>
+    <div class="divider"></div>
+    <div class="greek-item">
+      <span class="greek-sym green">Δ</span>
+      <span class="greek-name">Delta</span>
+      <span class="greek-val" id="gDelta">—</span>
+    </div>
+    <div class="greek-item">
+      <span class="greek-sym blue">Γ</span>
+      <span class="greek-name">Gamma</span>
+      <span class="greek-val" id="gGamma">—</span>
+    </div>
+    <div class="greek-item">
+      <span class="greek-sym yellow">ν</span>
+      <span class="greek-name">Vega / 1%</span>
+      <span class="greek-val" id="gVega">—</span>
+    </div>
+    <div class="greek-item">
+      <span class="greek-sym red">Θ</span>
+      <span class="greek-name">Theta / day</span>
+      <span class="greek-val" id="gTheta">—</span>
+    </div>
+    <div class="divider"></div>
+    <div class="greek-item">
+      <span class="greek-name">Pos. Δ</span>
+      <span class="greek-val" id="gPosDelta">—</span>
+    </div>
+    <div class="greek-item">
+      <span class="greek-name">Pos. Θ</span>
+      <span class="greek-val down" id="gPosTheta">—</span>
+    </div>
+    <div class="greek-item">
+      <span class="greek-name">Pos. ν</span>
+      <span class="greek-val up" id="gPosVega">—</span>
+    </div>
+  </div>
+
+</div><!-- /.main -->
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const SYMBOLS    = ['AAPL','NVDA','TSLA','SPY','QQQ'];
+const HAS_POS    = new Set(['AAPL','NVDA','TSLA','SPY']);
+const OPT_TYPE   = {AAPL:'call', NVDA:'call', TSLA:'put', SPY:'put'};
+let   selected   = 'AAPL';
+let   lastState  = null;
+let   alertSet   = new Set();
+
+// ── Chart.js setup ─────────────────────────────────────────────────────────
+const ctx  = document.getElementById('priceChart').getContext('2d');
+const gradUp = ctx.createLinearGradient(0, 0, 0, 300);
+gradUp.addColorStop(0, 'rgba(16,185,129,.25)');
+gradUp.addColorStop(1, 'rgba(16,185,129,0)');
+const gradDn = ctx.createLinearGradient(0, 0, 0, 300);
+gradDn.addColorStop(0, 'rgba(244,63,94,.25)');
+gradDn.addColorStop(1, 'rgba(244,63,94,0)');
+
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels:   [],
+    datasets: [{
+      label:           'Price',
+      data:            [],
+      borderWidth:     1.5,
+      pointRadius:     0,
+      tension:         0.3,
+      fill:            true,
+      borderColor:     '#10b981',
+      backgroundColor: gradUp,
+    }]
+  },
+  options: {
+    responsive:         true,
+    maintainAspectRatio:false,
+    animation:          false,
+    interaction:        { intersect: false, mode: 'index' },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#0d1018',
+        borderColor:     '#1a1f2e',
+        borderWidth:     1,
+        titleFont:       { family: 'JetBrains Mono', size: 11 },
+        bodyFont:        { family: 'JetBrains Mono', size: 11 },
+        callbacks: {
+          label: ctx => ' $' + ctx.raw.toFixed(2),
+        }
+      }
+    },
+    scales: {
+      x: {
+        display: false,
+        grid:    { display: false },
+      },
+      y: {
+        position: 'right',
+        grid:     { color: '#1a1f2e', drawBorder: false },
+        ticks: {
+          color:  '#5a6178',
+          font:   { family: 'JetBrains Mono', size: 10 },
+          callback: v => '$' + v.toFixed(2),
+        }
+      }
+    }
+  }
+});
+
+function updateChart(sym, prices, isUp) {
+  const col = isUp ? '#10b981' : '#f43f5e';
+  const grad = isUp ? gradUp : gradDn;
+  chart.data.labels           = prices.map((_, i) => i);
+  chart.data.datasets[0].data = prices;
+  chart.data.datasets[0].borderColor     = col;
+  chart.data.datasets[0].backgroundColor = grad;
+  chart.update('none');
+}
+
+// ── WebSocket ──────────────────────────────────────────────────────────────
+let ws, reconnectTimer;
+function connect() {
+  const url = `ws://${location.host}/ws/live`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    document.getElementById('connBadge').textContent = 'LIVE';
+    document.getElementById('connBadge').classList.remove('offline');
+  };
+
+  ws.onmessage = e => {
+    try { lastState = JSON.parse(e.data); render(lastState); }
+    catch {}
+  };
+
+  ws.onclose = () => {
+    document.getElementById('connBadge').textContent = 'RECONNECTING';
+    document.getElementById('connBadge').classList.add('offline');
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 2000);
+  };
+  ws.onerror = () => ws.close();
+}
+connect();
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function render(s) {
+  if (!s || !s.prices) return;
+
+  // Header time
+  const now = new Date(s.timestamp);
+  document.getElementById('headerTime').textContent =
+    now.toLocaleTimeString('en-US', {hour12:false}) + ' UTC';
+
+  // Positions list
+  renderPositions(s);
+
+  // Selected chart
+  const sel = s.prices[selected];
+  if (sel) {
+    const isUp = sel.change_pct >= 0;
+    document.getElementById('chartSym').textContent  = selected;
+    document.getElementById('chartPrice').textContent = '$' + sel.price.toFixed(2);
+    const chgEl = document.getElementById('chartChg');
+    chgEl.textContent  = (isUp ? '+' : '') + sel.change_pct.toFixed(3) + '%';
+    chgEl.className    = 'chart-chg ' + (isUp ? 'up' : 'down');
+    updateChart(selected, sel.history || [], isUp);
+  }
+
+  // Portfolio risk
+  renderPortfolio(s);
+
+  // Greeks for selected
+  renderGreeks(s, selected);
+
+  // Alerts
+  renderAlerts(s.alerts || []);
+
+  // Anomaly scores
+  renderScores(s.prices);
+}
+
+function renderPositions(s) {
+  const el = document.getElementById('positionList');
+  let html = '';
+  for (const sym of SYMBOLS) {
+    const p = s.prices[sym];
+    if (!p) continue;
+    const isUp   = p.change_pct >= 0;
+    const chgStr = (isUp ? '+' : '') + p.change_pct.toFixed(3) + '%';
+    const sc     = p.anomaly_score || 0;
+    const scColor= sc > 0.75 ? '#f43f5e' : sc > 0.60 ? '#fbbf24' : '#10b981';
+    const hasPo  = HAS_POS.has(sym);
+    const typeStr= hasPo ? OPT_TYPE[sym] : 'watch';
+
+    html += `<div class="position-card ${sym === selected ? 'active' : ''}"
+               onclick="selectSym('${sym}')">
+      <div class="pos-row1">
+        <span class="pos-ticker">${sym}</span>
+        <span class="pos-price ${isUp ? 'up' : 'down'}">$${p.price.toFixed(2)}</span>
+      </div>
+      <div class="pos-row2">
+        <span class="pos-type ${typeStr}">${typeStr}</span>
+        <span class="pos-chg ${isUp ? 'up' : 'down'}">${chgStr}</span>
+      </div>
+      <div class="pos-score">
+        <div class="score-bar">
+          <div class="score-fill" style="width:${(sc*100).toFixed(1)}%;background:${scColor}"></div>
+        </div>
+        <span class="score-val">${sc.toFixed(2)}</span>
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderPortfolio(s) {
+  const p = s.portfolio || {};
+  const v = s.var       || {};
+
+  const nd = p.net_delta   || 0;
+  const tt = p.total_theta || 0;
+  const tv = p.total_vega  || 0;
+
+  const ndEl = document.getElementById('netDelta');
+  ndEl.textContent  = (nd >= 0 ? '+' : '') + nd.toFixed(1) + ' shares';
+  ndEl.className    = 'metric-val ' + (nd >= 0 ? 'up' : 'down');
+
+  document.getElementById('totalTheta').textContent =
+    '−$' + Math.abs(tt).toFixed(0) + ' / day';
+  document.getElementById('totalVega').textContent  =
+    '+$' + tv.toFixed(0) + ' / 1%';
+  document.getElementById('varVal').textContent  =
+    v.portfolio_var  != null ? '$' + v.portfolio_var.toFixed(0)  : '—';
+  document.getElementById('cvarVal').textContent =
+    v.portfolio_cvar != null ? '$' + v.portfolio_cvar.toFixed(0) : '—';
+}
+
+function renderGreeks(s, sym) {
+  const g = (s.greeks || {})[sym];
+  document.getElementById('greeksTitle').textContent = sym + ' Greeks';
+  if (!g) return;
+
+  document.getElementById('gDelta').textContent     = g.delta.toFixed(4);
+  document.getElementById('gGamma').textContent     = g.gamma.toFixed(5);
+  document.getElementById('gVega').textContent      = '$' + g.vega.toFixed(3);
+  document.getElementById('gTheta').textContent     = '−$' + Math.abs(g.theta).toFixed(4);
+  document.getElementById('gPosDelta').textContent  = (g.position_delta >= 0 ? '+' : '') + g.position_delta.toFixed(1);
+  document.getElementById('gPosTheta').textContent  = '−$' + Math.abs(g.position_theta || 0).toFixed(0) + '/d';
+  document.getElementById('gPosVega').textContent   = '+$' + (g.position_vega || 0).toFixed(0);
+}
+
+function renderAlerts(alerts) {
+  if (!alerts.length) {
+    document.getElementById('alertsList').innerHTML = '<div class="no-alerts">No anomalies detected</div>';
+    return;
+  }
+  let html = '';
+  for (const a of alerts.slice(0, 12)) {
+    if (alertSet.has(a.id)) continue;
+    alertSet.add(a.id);
+    const t = new Date(a.timestamp).toLocaleTimeString('en-US', {hour12:false});
+    const scoreColor = a.score > 0.75 ? '#f43f5e' : '#fbbf24';
+    html += `<div class="alert-row">
+      <span class="alert-sev ${a.severity}">${a.severity}</span>
+      <span class="alert-ticker">${a.symbol}</span>
+      <span class="alert-type">${a.type.replace(/_/g,' ')} · ${(a.change_pct*100).toFixed(2)}%</span>
+      <span class="alert-score" style="color:${scoreColor}">${a.score.toFixed(3)}</span>
+      <span class="alert-time">${t}</span>
+    </div>`;
+  }
+  if (html) {
+    const list = document.getElementById('alertsList');
+    list.innerHTML = html + list.innerHTML;
+    // Keep max 20 rows
+    const rows = list.querySelectorAll('.alert-row');
+    if (rows.length > 20) rows[rows.length-1].remove();
+  }
+}
+
+function renderScores(prices) {
+  let html = '';
+  for (const sym of SYMBOLS) {
+    const p = prices[sym];
+    if (!p) continue;
+    const sc = p.anomaly_score || 0;
+    const scColor = sc > 0.75 ? 'down' : sc > 0.60 ? 'yellow' : 'up';
+    html += `<div class="metric-row">
+      <div class="metric-name">${sym}</div>
+      <div class="metric-val ${scColor}" style="font-family:var(--mono);font-size:12px">${sc.toFixed(3)}</div>
+    </div>`;
+  }
+  document.getElementById('scoreList').innerHTML = html;
+}
+
+// ── Controls ───────────────────────────────────────────────────────────────
+function selectSym(sym) {
+  selected = sym;
+  if (lastState) render(lastState);
+}
+
+async function triggerCrash() {
+  const btn = document.querySelector('.crash-btn');
+  btn.textContent = '⚡ Injecting…';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/v1/trigger-crash', { method: 'POST' });
+    const j = await r.json();
+    btn.textContent = `⚡ Crash: ${j.symbol}`;
+    setTimeout(() => { btn.textContent = '⚡ Trigger Flash Crash'; btn.disabled = false; }, 3000);
+  } catch {
+    btn.textContent = '⚡ Trigger Flash Crash';
+    btn.disabled = false;
+  }
+}
+
+// Clock
+setInterval(() => {
+  document.getElementById('headerTime').textContent =
+    new Date().toLocaleTimeString('en-US',{hour12:false}) + ' UTC';
+}, 1000);
+</script>
+</body>
+</html>
